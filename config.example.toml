@@ -1,0 +1,41 @@
+[general]
+output_dir = "~/Music/DJ"
+format = "m4a"
+quality = "320"
+archive = true
+naming = "{artist} - {title}"
+
+[sources]
+priority = [
+    "onthespot",
+    "spotdl",
+    "streamrip",
+    "orpheusdl",
+    "deemixfix",
+    "spotiflac",
+    "slsk-batchdl",
+    "yt-dlp",
+    "lucida",
+    "doubledouble",
+]
+
+[spotify]
+client_id = ""
+client_secret = ""
+playlist_id = ""
+
+[deezer]
+arl = ""
+
+[enhance]
+flac_dir = "~/Music/DJ/FLAC"
+sources = ["streamrip", "orpheusdl", "deemixfix", "spotiflac", "slsk-batchdl"]
+
+[stems]
+model = "htdemucs"
+output_dir = "~/Music/DJ/stems"
+device = "cuda"
+
+[analysis]
+bpm = true
+key = true
