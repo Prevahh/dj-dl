@@ -19,6 +19,11 @@ priority = [
     "doubledouble",
 ]
 
+[lyrics]
+sources = ["lrclib", "syrics"]
+embed = true
+sidecar_lrc = true
+
 [spotify]
 client_id = ""
 client_secret = ""

@@ -81,6 +81,74 @@ def sync(ctx, playlist, tag, analyze):
     sync_playlist(cfg, db, engine, playlist_id=playlist_id, tag=tag, analyze=analyze)
 
 @main.command()
+@click.argument("file", type=click.Path(exists=True), required=False)
+@click.option("--all", "all_tracks", is_flag=True, help="Process entire library")
+@click.option("--display", is_flag=True, help="Display synced lyrics in terminal")
+@click.pass_context
+def lyrics(ctx, file, all_tracks, display):
+    """Download and embed synced lyrics for tracks."""
+    from pathlib import Path
+    from .lyrics import download_lyrics, display_lyrics
+    from mutagen import File as MutagenFile
+
+    cfg = ctx.obj["cfg"]
+    db = ctx.obj["db"]
+    lyrics_cfg = cfg.get("lyrics", {})
+    embed = lyrics_cfg.get("embed", True)
+    sidecar = lyrics_cfg.get("sidecar_lrc", True)
+
+    def _process(track_path: Path):
+        audio = MutagenFile(str(track_path), easy=True)
+        artist, title, album = "", "", ""
+        if audio and audio.tags:
+            artist = (audio.tags.get("artist") or [""])[0]
+            title = (audio.tags.get("title") or [""])[0]
+            album = (audio.tags.get("album") or [""])[0]
+        if not (artist and title) and " - " in track_path.stem:
+            parts = track_path.stem.split(" - ", 1)
+            artist, title = parts[0].strip(), parts[1].strip()
+        lrc_path = download_lyrics(
+            track_path, artist=artist, title=title, album=album,
+            embed=embed, sidecar_lrc=sidecar,
+        )
+        if lrc_path:
+            click.echo(f"  ✓ {track_path.name}")
+            # Update DB if track is known
+            row = db.conn.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (str(track_path),)
+            ).fetchone()
+            if row:
+                db.update_track(row[0], lyrics_path=str(lrc_path))
+        else:
+            click.echo(f"  ✗ {track_path.name} (not found)")
+
+    if display:
+        if not file:
+            click.echo("--display requires a FILE argument.", err=True)
+            raise SystemExit(1)
+        lrc = Path(file).with_suffix(".lrc")
+        if not lrc.exists():
+            click.echo(f"No .lrc sidecar found at {lrc}. Run without --display first.", err=True)
+            raise SystemExit(1)
+        from .lyrics import display_lyrics
+        display_lyrics(lrc)
+        return
+
+    if all_tracks:
+        music_dir = Path(cfg["general"]["output_dir"])
+        exts = (".m4a", ".mp3", ".flac")
+        files = [f for f in music_dir.rglob("*") if f.suffix.lower() in exts]
+        click.echo(f"Processing {len(files)} tracks in {music_dir}...")
+        for f in files:
+            _process(f)
+    elif file:
+        _process(Path(file))
+    else:
+        click.echo("Provide a FILE or use --all.", err=True)
+        raise SystemExit(1)
+
+
+@main.command()
 @click.pass_context
 def migrate(ctx):
     """Import existing yt-dlp archive and scan library into database."""

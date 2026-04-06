@@ -24,6 +24,11 @@ DEFAULT_CONFIG = {
         ],
     },
     "spotify": {"client_id": "", "client_secret": "", "playlist_id": ""},
+    "lyrics": {
+        "sources": ["lrclib", "syrics"],
+        "embed": True,
+        "sidecar_lrc": True,
+    },
     "deezer": {"arl": ""},
     "enhance": {
         "flac_dir": expanduser("~/Music/DJ/FLAC"),
