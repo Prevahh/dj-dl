@@ -11,6 +11,14 @@ from .logging_setup import setup_logging
 from .postprocess import postprocess
 from .sources.ytdlp import YtDlpSource
 from .sources.spotdl import SpotdlSource
+from .sources.onthespot import OnTheSpotSource
+from .sources.streamrip import StreamripSource
+from .sources.slsk import SlskSource
+from .sources.orpheusdl import OrpheusDLSource
+from .sources.deemixfix import DeemixFixSource
+from .sources.spotiflac import SpotiFLACSource
+from .sources.lucida import LucidaSource
+from .sources.doubledouble import DoubleDoubleSource
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +26,17 @@ def _build_engine(cfg: dict) -> DownloadEngine:
     source_map = {
         "yt-dlp": lambda: YtDlpSource(),
         "spotdl": lambda: SpotdlSource(),
+        "onthespot": lambda: OnTheSpotSource(),
+        "streamrip": lambda: StreamripSource(),
+        "soulseek": lambda: SlskSource(),
+        "orpheusdl": lambda: OrpheusDLSource(),
+        "deemixfix": lambda: DeemixFixSource(),
+        "spotiflac": lambda: SpotiFLACSource(),
+        "lucida": lambda: LucidaSource(),
+        "doubledouble": lambda: DoubleDoubleSource(),
     }
     sources = []
-    for name in cfg["sources"]["priority"]:
+    for name in cfg["sources"].get("priority", ["yt-dlp", "spotdl"]):
         factory = source_map.get(name)
         if factory:
             sources.append(factory())
@@ -139,6 +155,164 @@ def lyrics(ctx, file, all_tracks, display):
         exts = (".m4a", ".mp3", ".flac")
         files = [f for f in music_dir.rglob("*") if f.suffix.lower() in exts]
         click.echo(f"Processing {len(files)} tracks in {music_dir}...")
+        for f in files:
+            _process(f)
+    elif file:
+        _process(Path(file))
+    else:
+        click.echo("Provide a FILE or use --all.", err=True)
+        raise SystemExit(1)
+
+
+@main.command()
+@click.argument("file", type=click.Path(exists=True), required=False)
+@click.option("--all", "all_tracks", is_flag=True, help="Tag entire library")
+@click.option("--no-art", "no_art", is_flag=True, help="Skip cover art embedding")
+@click.pass_context
+def tag(ctx, file, all_tracks, no_art):
+    """Enrich track metadata via MusicBrainz (genre, year, ISRC, cover art)."""
+    from .tagger import enrich_track
+    cfg = ctx.obj["cfg"]
+    db = ctx.obj["db"]
+    embed_art = not no_art
+
+    def _process(track_path: Path):
+        result = enrich_track(track_path, embed_art=embed_art, db=db)
+        if result.get("isrc"):
+            row = db.conn.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (str(track_path),)
+            ).fetchone()
+            if row:
+                db.update_track(row[0], isrc=result["isrc"],
+                                artist=result["artist"], title=result["title"],
+                                album=result["album"])
+        click.echo(f"  ✓ {track_path.name} "
+                   f"[{result.get('genre','?')} {result.get('year','')} ISRC:{result.get('isrc','?')}]")
+
+    if all_tracks:
+        music_dir = Path(cfg["general"]["output_dir"])
+        exts = (".m4a", ".mp3", ".flac")
+        files = [f for f in music_dir.rglob("*") if f.suffix.lower() in exts]
+        click.echo(f"Tagging {len(files)} tracks in {music_dir}...")
+        for f in files:
+            _process(f)
+    elif file:
+        _process(Path(file))
+    else:
+        click.echo("Provide a FILE or use --all.", err=True)
+        raise SystemExit(1)
+
+
+@main.command()
+@click.argument("file", type=click.Path(exists=True), required=False)
+@click.option("--all", "all_tracks", is_flag=True, help="Analyze entire library")
+@click.pass_context
+def analyze(ctx, file, all_tracks):
+    """Detect BPM and musical key via essentia (or aubio/keyfinder-cli fallback)."""
+    from .analyzer import analyze_track
+    cfg = ctx.obj["cfg"]
+    db = ctx.obj["db"]
+
+    def _process(track_path: Path):
+        bpm, key = analyze_track(track_path)
+        label_parts = []
+        if bpm:
+            label_parts.append(f"BPM:{bpm:.1f}")
+        if key:
+            label_parts.append(f"Key:{key}")
+        label = " ".join(label_parts) if label_parts else "no analysis"
+        click.echo(f"  {'✓' if label_parts else '✗'} {track_path.name} [{label}]")
+        if bpm or key:
+            row = db.conn.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (str(track_path),)
+            ).fetchone()
+            if row:
+                db.update_track(row[0], bpm=bpm, key=key)
+
+    if all_tracks:
+        music_dir = Path(cfg["general"]["output_dir"])
+        exts = (".m4a", ".mp3", ".flac")
+        files = [f for f in music_dir.rglob("*") if f.suffix.lower() in exts]
+        click.echo(f"Analyzing {len(files)} tracks in {music_dir}...")
+        for f in files:
+            _process(f)
+    elif file:
+        _process(Path(file))
+    else:
+        click.echo("Provide a FILE or use --all.", err=True)
+        raise SystemExit(1)
+
+
+@main.command()
+@click.argument("file", type=click.Path(exists=True), required=False)
+@click.option("--all", "all_tracks", is_flag=True, help="Enhance entire library")
+@click.pass_context
+def enhance(ctx, file, all_tracks):
+    """Search lossless sources for tracks and save FLAC copies to DJ/FLAC/."""
+    from .enhancer import enhance_track
+    cfg = ctx.obj["cfg"]
+    db = ctx.obj["db"]
+    music_dir = Path(cfg["general"]["output_dir"])
+
+    def _process(track_path: Path):
+        flac_path = enhance_track(track_path, music_dir)
+        if flac_path:
+            click.echo(f"  ✓ {track_path.name} → {flac_path.name}")
+            row = db.conn.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (str(track_path),)
+            ).fetchone()
+            if row:
+                db.update_track(row[0], flac_path=str(flac_path))
+        else:
+            click.echo(f"  ✗ {track_path.name} (no lossless found)")
+
+    if all_tracks:
+        exts = (".m4a", ".mp3")
+        files = [f for f in music_dir.rglob("*") if f.suffix.lower() in exts]
+        click.echo(f"Enhancing {len(files)} tracks in {music_dir}...")
+        for f in files:
+            _process(f)
+    elif file:
+        _process(Path(file))
+    else:
+        click.echo("Provide a FILE or use --all.", err=True)
+        raise SystemExit(1)
+
+
+@main.command()
+@click.argument("file", type=click.Path(exists=True), required=False)
+@click.option("--all", "all_tracks", is_flag=True, help="Separate stems for entire library")
+@click.option("--model", default="htdemucs", show_default=True, help="Demucs model to use")
+@click.option("--device", default="cuda", show_default=True, help="Compute device (cuda/cpu)")
+@click.pass_context
+def stems(ctx, file, all_tracks, model, device):
+    """Separate tracks into stems (vocals/drums/bass/other) via Demucs."""
+    from .stems import separate_stems
+    cfg = ctx.obj["cfg"]
+    db = ctx.obj["db"]
+    music_dir = Path(cfg["general"]["output_dir"])
+
+    def _process(track_path: Path):
+        stem_dir = separate_stems(track_path, music_dir, model=model, device=device)
+        if stem_dir:
+            wav_count = len(list(stem_dir.glob("*.wav")))
+            click.echo(f"  ✓ {track_path.name} → {stem_dir} ({wav_count} stems)")
+            row = db.conn.execute(
+                "SELECT id FROM tracks WHERE file_path = ?", (str(track_path),)
+            ).fetchone()
+            if row:
+                db.update_track(row[0], stems_path=str(stem_dir))
+        else:
+            click.echo(f"  ✗ {track_path.name} (stem separation failed)")
+
+    if all_tracks:
+        exts = (".m4a", ".mp3", ".flac")
+        files = [
+            f for f in music_dir.rglob("*")
+            if f.suffix.lower() in exts
+            and "stems" not in str(f)  # Skip stem files themselves
+        ]
+        click.echo(f"Separating stems for {len(files)} tracks (model={model}, device={device})...")
         for f in files:
             _process(f)
     elif file:
